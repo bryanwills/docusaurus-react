@@ -164,6 +164,7 @@ lastmod
 Lastmod
 lifecycles
 Lifecycles
+lightningcss
 linkify
 Linkify
 Localizable
@@ -310,6 +311,11 @@ Retrocompatibility
 retrocompatible
 Retrocompatible
 rmiz
+rsdoctor
+Rsdoctor
+RSDOCTOR
+rspack
+Rspack
 rtcts
 rtlcss
 saurus

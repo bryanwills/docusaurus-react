@@ -23,6 +23,7 @@ exports[`base webpack config creates webpack aliases 1`] = `
   "@docusaurus/useIsomorphicLayoutEffect": "../../../../client/exports/useIsomorphicLayoutEffect.tsx",
   "@docusaurus/useRouteContext": "../../../../client/exports/useRouteContext.tsx",
   "@generated": "../../../../../../..",
+  "@mdx-js/react": "../../../../../../../node_modules/@mdx-js/react",
   "@site": "",
   "@theme-init/PluginThemeComponentEnhanced": "pluginThemeFolder/PluginThemeComponentEnhanced.js",
   "@theme-original/Error": "../../../../client/theme-fallback/Error/index.tsx",
@@ -47,5 +48,58 @@ exports[`base webpack config creates webpack aliases 1`] = `
   "@theme/UserThemeComponent1": "src/theme/UserThemeComponent1.js",
   "@theme/subfolder/PluginThemeComponent2": "pluginThemeFolder/subfolder/PluginThemeComponent2.js",
   "@theme/subfolder/UserThemeComponent2": "src/theme/subfolder/UserThemeComponent2.js",
+  "react": "../../../../../../../node_modules/react",
+  "react-dom": "../../../../../../../node_modules/react-dom",
+}
+`;
+
+exports[`base webpack config uses svg rule 1`] = `
+{
+  "oneOf": [
+    {
+      "issuer": {
+        "and": [
+          /\\\\\\.\\(\\?:tsx\\?\\|jsx\\?\\|mdx\\?\\)\\$/i,
+        ],
+      },
+      "use": [
+        {
+          "loader": "<PROJECT_ROOT>/node_modules/@svgr/webpack/dist/index.js",
+          "options": {
+            "prettier": false,
+            "svgo": true,
+            "svgoConfig": {
+              "plugins": [
+                {
+                  "name": "preset-default",
+                  "params": {
+                    "overrides": {
+                      "removeTitle": false,
+                      "removeViewBox": false,
+                    },
+                  },
+                },
+              ],
+            },
+            "titleProp": true,
+          },
+        },
+      ],
+    },
+    {
+      "use": [
+        {
+          "loader": "<PROJECT_ROOT>/node_modules/url-loader/dist/cjs.js",
+          "options": {
+            "emitFile": true,
+            "fallback": "<PROJECT_ROOT>/node_modules/file-loader/dist/cjs.js",
+            "limit": 10000,
+            "name": "assets/images/[name]-[contenthash].[ext]",
+          },
+        },
+      ],
+    },
+  ],
+  "test": /\\\\\\.svg\\$/i,
 }
 `;

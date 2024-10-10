@@ -8,10 +8,21 @@
 import {jest} from '@jest/globals';
 import path from 'path';
 import _ from 'lodash';
-import * as utils from '@docusaurus/utils/lib/webpackUtils';
+import webpack from 'webpack';
 import {posixPath} from '@docusaurus/utils';
 import {excludeJS, clientDir, createBaseConfig} from '../base';
+import {
+  DEFAULT_FASTER_CONFIG,
+  DEFAULT_FUTURE_CONFIG,
+} from '../../server/configValidation';
+import {createConfigureWebpackUtils} from '../configure';
 import type {Props} from '@docusaurus/types';
+
+function createTestConfigureWebpackUtils() {
+  return createConfigureWebpackUtils({
+    siteConfig: {webpack: {jsLoader: 'babel'}, future: DEFAULT_FUTURE_CONFIG},
+  });
+}
 
 describe('babel transpilation exclude logic', () => {
   it('always transpiles client dir files', () => {
@@ -66,7 +77,7 @@ describe('base webpack config', () => {
   const props = {
     outDir: '',
     siteDir: path.resolve(__dirname, '__fixtures__', 'base_test_site'),
-    siteConfig: {staticDirectories: ['static'], future: {}},
+    siteConfig: {staticDirectories: ['static'], future: DEFAULT_FUTURE_CONFIG},
     baseUrl: '',
     generatedFilesDir: '',
     routesPaths: [''],
@@ -76,6 +87,7 @@ describe('base webpack config', () => {
     siteMetadata: {
       docusaurusVersion: '2.0.0-alpha.70',
     },
+    currentBundler: {name: 'webpack', instance: webpack},
     plugins: [
       {
         getThemePath() {
@@ -106,7 +118,13 @@ describe('base webpack config', () => {
 
   it('creates webpack aliases', async () => {
     const aliases = ((
-      await createBaseConfig({props, isServer: true, minify: true})
+      await createBaseConfig({
+        props,
+        isServer: true,
+        minify: true,
+        faster: DEFAULT_FASTER_CONFIG,
+        configureWebpackUtils: await createTestConfigureWebpackUtils(),
+      })
     ).resolve?.alias ?? {}) as {[alias: string]: string};
     // Make aliases relative so that test work on all computers
     const relativeAliases = _.mapValues(aliases, (a) =>
@@ -116,13 +134,18 @@ describe('base webpack config', () => {
   });
 
   it('uses svg rule', async () => {
-    const fileLoaderUtils = utils.getFileLoaderUtils();
-    const mockSvg = jest.spyOn(fileLoaderUtils.rules, 'svg');
-    jest
-      .spyOn(utils, 'getFileLoaderUtils')
-      .mockImplementation(() => fileLoaderUtils);
+    const config = await createBaseConfig({
+      props,
+      isServer: false,
+      minify: false,
+      faster: DEFAULT_FASTER_CONFIG,
+      configureWebpackUtils: await createTestConfigureWebpackUtils(),
+    });
 
-    await createBaseConfig({props, isServer: false, minify: false});
-    expect(mockSvg).toHaveBeenCalled();
+    const svgRule = (config.module?.rules ?? []).find((rule) => {
+      return rule && (rule as any).test.toString().includes('.svg');
+    });
+    expect(svgRule).toBeDefined();
+    expect(svgRule).toMatchSnapshot();
   });
 });

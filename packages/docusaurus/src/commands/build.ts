@@ -8,16 +8,17 @@
 import fs from 'fs-extra';
 import path from 'path';
 import _ from 'lodash';
-import logger from '@docusaurus/logger';
+import {compile, getHtmlMinifier} from '@docusaurus/bundler';
+import logger, {PerfLogger} from '@docusaurus/logger';
 import {DOCUSAURUS_VERSION, mapAsyncSequential} from '@docusaurus/utils';
 import {loadSite, loadContext, type LoadContextParams} from '../server/site';
 import {handleBrokenLinks} from '../server/brokenLinks';
-
 import {createBuildClientConfig} from '../webpack/client';
 import createServerConfig from '../webpack/server';
-import {executePluginsConfigureWebpack} from '../webpack/configure';
-import {compile} from '../webpack/utils';
-import {PerfLogger} from '../utils';
+import {
+  createConfigureWebpackUtils,
+  executePluginsConfigureWebpack,
+} from '../webpack/configure';
 
 import {loadI18n} from '../server/i18n';
 import {
@@ -33,7 +34,12 @@ import defaultSSRTemplate from '../templates/ssr.html.template';
 import type {SSGParams} from '../ssg';
 
 import type {Manifest} from 'react-loadable-ssr-addon-v5-slorber';
-import type {LoadedPlugin, Props, RouterType} from '@docusaurus/types';
+import type {
+  ConfigureWebpackUtils,
+  LoadedPlugin,
+  Props,
+  RouterType,
+} from '@docusaurus/types';
 import type {SiteCollectedData} from '../common';
 
 export type BuildCLIOptions = Pick<
@@ -48,11 +54,6 @@ export type BuildCLIOptions = Pick<
 export async function build(
   siteDirParam: string = '.',
   cliOptions: Partial<BuildCLIOptions> = {},
-  // When running build, we force terminate the process to prevent async
-  // operations from never returning. However, if run as part of docusaurus
-  // deploy, we have to let deploy finish.
-  // See https://github.com/facebook/docusaurus/pull/2496
-  forceTerminate: boolean = true,
 ): Promise<void> {
   process.env.BABEL_ENV = 'production';
   process.env.NODE_ENV = 'production';
@@ -98,18 +99,11 @@ export async function build(
 
   await PerfLogger.async(`Build`, () =>
     mapAsyncSequential(locales, async (locale) => {
-      const isLastLocale = locales.indexOf(locale) === locales.length - 1;
       await tryToBuildLocale({locale});
-      if (isLastLocale) {
-        logger.info`Use code=${'npm run serve'} command to test your build locally.`;
-      }
-
-      // TODO do we really need this historical forceTerminate exit???
-      if (forceTerminate && isLastLocale && !cliOptions.bundleAnalyzer) {
-        process.exit(0);
-      }
     }),
   );
+
+  logger.info`Use code=${'npm run serve'} command to test your build locally.`;
 }
 
 async function getLocalesToBuild({
@@ -176,28 +170,36 @@ async function buildLocale({
 
   const router = siteConfig.future.experimental_router;
 
+  const configureWebpackUtils = await createConfigureWebpackUtils({siteConfig});
+
   // We can build the 2 configs in parallel
   const [{clientConfig, clientManifestPath}, {serverConfig, serverBundlePath}] =
-    await PerfLogger.async('Creating webpack configs', () =>
+    await PerfLogger.async('Creating bundler configs', () =>
       Promise.all([
         getBuildClientConfig({
           props,
           cliOptions,
+          configureWebpackUtils,
         }),
         getBuildServerConfig({
           props,
+          configureWebpackUtils,
         }),
       ]),
     );
 
   // Run webpack to build JS bundle (client) and static html files (server).
-  await PerfLogger.async('Bundling with Webpack', () => {
-    if (router === 'hash') {
-      return compile([clientConfig]);
-    } else {
-      return compile([clientConfig, serverConfig]);
-    }
-  });
+  await PerfLogger.async(
+    `Bundling with ${configureWebpackUtils.currentBundler.name}`,
+    () => {
+      return compile({
+        configs:
+          // For hash router we don't do SSG and can skip the server bundle
+          router === 'hash' ? [clientConfig] : [clientConfig, serverConfig],
+        currentBundler: configureWebpackUtils.currentBundler,
+      });
+    },
+  );
 
   const {collectedData} = await PerfLogger.async('SSG', () =>
     executeSSG({
@@ -208,10 +210,7 @@ async function buildLocale({
     }),
   );
 
-  // Remove server.bundle.js because it is not needed.
-  await PerfLogger.async('Deleting server bundle', () =>
-    ensureUnlink(serverBundlePath),
-  );
+  await cleanupServerBundle(serverBundlePath);
 
   // Plugin Lifecycle - postBuild.
   await PerfLogger.async('postBuild()', () =>
@@ -272,17 +271,23 @@ async function executeSSG({
     return {collectedData: {}};
   }
 
-  const renderer = await PerfLogger.async('Load App renderer', () =>
-    loadAppRenderer({
-      serverBundlePath,
-    }),
-  );
+  const [renderer, htmlMinifier] = await Promise.all([
+    PerfLogger.async('Load App renderer', () =>
+      loadAppRenderer({
+        serverBundlePath,
+      }),
+    ),
+    PerfLogger.async('Load HTML minifier', () =>
+      getHtmlMinifier({siteConfig: props.siteConfig}),
+    ),
+  ]);
 
   const ssgResult = await PerfLogger.async('Generate static files', () =>
     generateStaticFiles({
       pathnames: props.routesPaths,
       renderer,
       params,
+      htmlMinifier,
     }),
   );
 
@@ -338,14 +343,18 @@ async function executeBrokenLinksCheck({
 async function getBuildClientConfig({
   props,
   cliOptions,
+  configureWebpackUtils,
 }: {
   props: Props;
   cliOptions: BuildCLIOptions;
+  configureWebpackUtils: ConfigureWebpackUtils;
 }) {
   const {plugins} = props;
   const result = await createBuildClientConfig({
     props,
     minify: cliOptions.minify ?? true,
+    faster: props.siteConfig.future.experimental_faster,
+    configureWebpackUtils,
     bundleAnalyzer: cliOptions.bundleAnalyzer ?? false,
   });
   let {config} = result;
@@ -353,28 +362,44 @@ async function getBuildClientConfig({
     plugins,
     config,
     isServer: false,
-    jsLoader: props.siteConfig.webpack?.jsLoader,
+    configureWebpackUtils,
   });
   return {clientConfig: config, clientManifestPath: result.clientManifestPath};
 }
 
-async function getBuildServerConfig({props}: {props: Props}) {
+async function getBuildServerConfig({
+  props,
+  configureWebpackUtils,
+}: {
+  props: Props;
+  configureWebpackUtils: ConfigureWebpackUtils;
+}) {
   const {plugins} = props;
   const result = await createServerConfig({
     props,
+    configureWebpackUtils,
   });
   let {config} = result;
   config = executePluginsConfigureWebpack({
     plugins,
     config,
     isServer: true,
-    jsLoader: props.siteConfig.webpack?.jsLoader,
+    configureWebpackUtils,
   });
   return {serverConfig: config, serverBundlePath: result.serverBundlePath};
 }
 
-async function ensureUnlink(filepath: string) {
-  if (await fs.pathExists(filepath)) {
-    await fs.unlink(filepath);
+// Remove /build/server server.bundle.js because it is not needed.
+async function cleanupServerBundle(serverBundlePath: string) {
+  if (process.env.DOCUSAURUS_KEEP_SERVER_BUNDLE === 'true') {
+    logger.warn(
+      "Will NOT delete server bundle because DOCUSAURUS_KEEP_SERVER_BUNDLE is set to 'true'",
+    );
+  } else {
+    await PerfLogger.async('Deleting server bundle', async () => {
+      // For now we assume server entry is at the root of the server out dir
+      const serverDir = path.dirname(serverBundlePath);
+      await fs.rm(serverDir, {recursive: true, force: true});
+    });
   }
 }
